@@ -1,0 +1,19 @@
+[package]
+name = "composer-update-checker-lsp"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Language server that flags outdated Composer packages in composer.json using the Packagist metadata API."
+
+[[bin]]
+name = "composer-update-checker-lsp"
+path = "src/main.rs"
+
+[dependencies]
+tower-lsp = "0.20"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+futures = "0.3"
+semver = "1"

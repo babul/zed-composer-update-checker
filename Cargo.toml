@@ -1,0 +1,24 @@
+[package]
+name = "composer-update-checker"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Highlights outdated Composer packages in composer.json files. Latest versions from Packagist. Shown minimalistically without UI bloat."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+zed_extension_api = "0.7.0"
+
+[workspace]
+members = ["lsp"]
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
+
+# to build the language server:
+# cargo build --release -p composer-update-checker-lsp

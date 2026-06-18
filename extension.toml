@@ -1,0 +1,11 @@
+id = "composer-update-checker"
+name = "Composer composer.json Update Checker"
+version = "0.1.0"
+schema_version = 1
+authors = ["Babul A. Mukherjee <babul@montopolis.com>"]
+description = "📥 Highlights outdated Composer packages in composer.json and offers one-click version bumps. Latest versions from Packagist. Minimal, no UI bloat."
+repository = "https://github.com/babul/zed-composer-update-checker"
+
+[language_servers.composer-update-checker-lsp]
+name = "Composer composer.json Update Checker LSP"
+languages = ["JSON"]
