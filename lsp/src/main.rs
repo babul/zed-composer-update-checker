@@ -15,10 +15,13 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 
 use constraint::{is_outdated, suggested_constraint};
 use manifest::{parse_dependencies, Dependency};
-use packagist::{Packagist, Release};
+use packagist::{Packagist, Release, VersionInfo};
 
 /// Maximum concurrent Packagist requests per check pass.
 const MAX_CONCURRENCY: usize = 10;
+
+/// Command id for the Code Lens "Update to …" action.
+const APPLY_UPDATE_COMMAND: &str = "composer-update-checker.applyUpdate";
 
 struct Backend {
     client: Client,
@@ -102,6 +105,17 @@ impl LanguageServer for Backend {
                 )),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
+                completion_provider: Some(CompletionOptions {
+                    trigger_characters: Some(vec![".".to_string()]),
+                    ..Default::default()
+                }),
+                code_lens_provider: Some(CodeLensOptions {
+                    resolve_provider: Some(false),
+                }),
+                execute_command_provider: Some(ExecuteCommandOptions {
+                    commands: vec![APPLY_UPDATE_COMMAND.to_string()],
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -199,23 +213,160 @@ impl LanguageServer for Backend {
             }
 
             let new_constraint = suggested_constraint(&dep.constraint, &latest.display);
-            let edit = TextEdit {
-                range: dep.value_range,
-                new_text: new_constraint.clone(),
-            };
             actions.push(CodeActionOrCommand::CodeAction(CodeAction {
                 title: format!("Update {} to {}", dep.name, new_constraint),
                 kind: Some(CodeActionKind::QUICKFIX),
-                edit: Some(WorkspaceEdit {
-                    changes: Some(HashMap::from([(uri.clone(), vec![edit])])),
-                    ..Default::default()
-                }),
+                edit: Some(replace_edit(uri.clone(), dep.value_range, new_constraint)),
                 ..Default::default()
             }));
         }
 
         Ok(Some(actions))
     }
+
+    async fn completion(
+        &self,
+        params: CompletionParams,
+    ) -> tower_lsp::jsonrpc::Result<Option<CompletionResponse>> {
+        let uri = params.text_document_position.text_document.uri;
+        if !is_composer_manifest(&uri) {
+            return Ok(None);
+        }
+        let Some(text) = self.document(&uri) else {
+            return Ok(None);
+        };
+
+        let position = params.text_document_position.position;
+        for dep in parse_dependencies(&text) {
+            if !position_in_range(position, &dep.value_range) {
+                continue;
+            }
+            let versions = self.packagist.versions(&dep.name).await;
+            return Ok(Some(CompletionResponse::Array(completion_items(
+                &dep, &versions,
+            ))));
+        }
+        Ok(None)
+    }
+
+    async fn code_lens(
+        &self,
+        params: CodeLensParams,
+    ) -> tower_lsp::jsonrpc::Result<Option<Vec<CodeLens>>> {
+        let uri = params.text_document.uri;
+        if !is_composer_manifest(&uri) {
+            return Ok(None);
+        }
+        let Some(text) = self.document(&uri) else {
+            return Ok(None);
+        };
+
+        let mut lenses = Vec::new();
+        for dep in parse_dependencies(&text) {
+            let Some(latest) = self.packagist.latest_stable(&dep.name).await else {
+                continue;
+            };
+            if !is_outdated(&dep.constraint, &latest.version) {
+                continue;
+            }
+            let new_constraint = suggested_constraint(&dep.constraint, &latest.display);
+            lenses.push(update_lens(&uri, &dep, &new_constraint));
+        }
+        Ok(Some(lenses))
+    }
+
+    async fn execute_command(
+        &self,
+        params: ExecuteCommandParams,
+    ) -> tower_lsp::jsonrpc::Result<Option<serde_json::Value>> {
+        if params.command != APPLY_UPDATE_COMMAND {
+            return Ok(None);
+        }
+        if let Some(args) = params.arguments.into_iter().next() {
+            if let Ok(update) = serde_json::from_value::<UpdateArgs>(args) {
+                let edit = replace_edit(update.uri, update.range, update.new_text);
+                let _ = self.client.apply_edit(edit).await;
+            }
+        }
+        Ok(None)
+    }
+}
+
+/// Arguments carried by the `applyUpdate` Code Lens command.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct UpdateArgs {
+    uri: Url,
+    range: Range,
+    new_text: String,
+}
+
+/// Single-edit `WorkspaceEdit` replacing `range` in `uri` with `new_text`.
+/// Shared by the code action and the Code Lens command.
+fn replace_edit(uri: Url, range: Range, new_text: String) -> WorkspaceEdit {
+    WorkspaceEdit {
+        changes: Some(HashMap::from([(uri, vec![TextEdit { range, new_text }])])),
+        ..Default::default()
+    }
+}
+
+/// Build a "⬆ Update to …" Code Lens that, when clicked, replaces the
+/// dependency's constraint with `new_constraint`.
+fn update_lens(uri: &Url, dep: &Dependency, new_constraint: &str) -> CodeLens {
+    let args = UpdateArgs {
+        uri: uri.clone(),
+        range: dep.value_range,
+        new_text: new_constraint.to_string(),
+    };
+    CodeLens {
+        range: dep.value_range,
+        command: Some(Command {
+            title: format!("⬆ Update to {new_constraint}"),
+            command: APPLY_UPDATE_COMMAND.to_string(),
+            arguments: serde_json::to_value(args).ok().map(|v| vec![v]),
+        }),
+        data: None,
+    }
+}
+
+/// Completion items offering every published version for `dep`, newest-first.
+/// Each item inserts an operator-preserving constraint (`^7.12` → `^7.12.1`);
+/// the latest stable is preselected.
+fn completion_items(dep: &Dependency, versions: &[VersionInfo]) -> Vec<CompletionItem> {
+    let latest_stable = versions.iter().position(|v| v.stable);
+    versions
+        .iter()
+        .enumerate()
+        .map(|(i, version)| {
+            let new_text = suggested_constraint(&dep.constraint, &version.display);
+            CompletionItem {
+                label: version.display.clone(),
+                kind: Some(CompletionItemKind::VALUE),
+                detail: Some(
+                    if version.stable { "stable" } else { "pre-release" }.to_string(),
+                ),
+                // Match the candidate against the value being replaced (e.g.
+                // `^7.12`) rather than its bare label, or the operator prefix
+                // would filter every item out.
+                filter_text: Some(new_text.clone()),
+                sort_text: Some(format!("{i:06}")),
+                preselect: Some(Some(i) == latest_stable),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                    range: dep.value_range,
+                    new_text,
+                })),
+                ..Default::default()
+            }
+        })
+        .collect()
+}
+
+/// True when `position` falls within `range` (constraints are single-line, so a
+/// same-line column test suffices; the end is inclusive so the cursor at the
+/// closing quote still completes).
+fn position_in_range(position: Position, range: &Range) -> bool {
+    position.line == range.start.line
+        && position.character >= range.start.character
+        && position.character <= range.end.character
 }
 
 /// The Packagist package page for a `vendor/package`.
@@ -262,4 +413,95 @@ async fn main() {
     let stdout = tokio::io::stdout();
     let (service, socket) = LspService::new(Backend::new);
     Server::new(stdin, stdout, socket).serve(service).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dep(constraint: &str) -> Dependency {
+        Dependency {
+            name: "guzzlehttp/guzzle".to_string(),
+            constraint: constraint.to_string(),
+            value_range: Range {
+                start: Position::new(3, 26),
+                end: Position::new(3, 32),
+            },
+            dev: false,
+        }
+    }
+
+    fn version(display: &str, stable: bool) -> VersionInfo {
+        VersionInfo {
+            display: display.to_string(),
+            stable,
+        }
+    }
+
+    fn edit_text(item: &CompletionItem) -> &str {
+        match item.text_edit.as_ref().unwrap() {
+            CompletionTextEdit::Edit(edit) => &edit.new_text,
+            _ => panic!("expected an Edit text_edit"),
+        }
+    }
+
+    #[test]
+    fn completion_preserves_operator_and_preselects_latest_stable() {
+        let versions = [
+            version("7.12.x-dev", false),
+            version("7.12.1", true),
+            version("7.12.0", true),
+        ];
+        let items = completion_items(&dep("^7.11"), &versions);
+
+        // One item per version, newest-first order held via sort_text.
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].sort_text.as_deref(), Some("000000"));
+        assert_eq!(items[2].sort_text.as_deref(), Some("000002"));
+
+        // Operator preserved in both the inserted text and the filter text.
+        assert_eq!(edit_text(&items[1]), "^7.12.1");
+        assert_eq!(items[1].filter_text.as_deref(), Some("^7.12.1"));
+
+        // The first stable entry is preselected; the dev tag is not.
+        assert_eq!(items[1].preselect, Some(true));
+        assert_eq!(items[0].preselect, Some(false));
+        assert_eq!(items[0].detail.as_deref(), Some("pre-release"));
+        assert_eq!(items[1].detail.as_deref(), Some("stable"));
+    }
+
+    #[test]
+    fn completion_keeps_exact_pin_exact() {
+        let items = completion_items(&dep("7.11.2"), &[version("7.12.1", true)]);
+        assert_eq!(edit_text(&items[0]), "7.12.1");
+    }
+
+    #[test]
+    fn position_in_range_is_inclusive_of_both_ends() {
+        let range = Range {
+            start: Position::new(3, 26),
+            end: Position::new(3, 32),
+        };
+        assert!(position_in_range(Position::new(3, 26), &range));
+        assert!(position_in_range(Position::new(3, 29), &range));
+        assert!(position_in_range(Position::new(3, 32), &range));
+        assert!(!position_in_range(Position::new(3, 25), &range));
+        assert!(!position_in_range(Position::new(3, 33), &range));
+        assert!(!position_in_range(Position::new(2, 29), &range));
+    }
+
+    #[test]
+    fn update_lens_carries_round_trippable_args() {
+        let uri = Url::parse("file:///app/composer.json").unwrap();
+        let lens = update_lens(&uri, &dep("^7.11"), "^7.12.1");
+        let command = lens.command.unwrap();
+        assert_eq!(command.command, APPLY_UPDATE_COMMAND);
+        assert_eq!(command.title, "⬆ Update to ^7.12.1");
+
+        let arg = command.arguments.unwrap().into_iter().next().unwrap();
+        let parsed: UpdateArgs = serde_json::from_value(arg).unwrap();
+        assert_eq!(parsed.uri, uri);
+        assert_eq!(parsed.new_text, "^7.12.1");
+        assert_eq!(parsed.range, dep("^7.11").value_range);
+    }
 }

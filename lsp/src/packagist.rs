@@ -24,6 +24,14 @@ pub struct Release {
     pub repository: Option<String>,
 }
 
+/// A single published version, as offered in completion. `stable` is false for
+/// any pre-release/dev tag (anything containing `-`, e.g. `-RC1`, `x-dev`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionInfo {
+    pub display: String,
+    pub stable: bool,
+}
+
 #[derive(Debug, Deserialize)]
 struct Metadata {
     packages: HashMap<String, Vec<VersionEntry>>,
@@ -73,6 +81,25 @@ fn select_latest_stable(entries: &[VersionEntry]) -> Option<Release> {
     best
 }
 
+/// List every published version newest-first (Packagist's native order),
+/// tagging each as stable or pre-release. The leading `v`/`V` is stripped so
+/// the display matches `select_latest_stable`.
+fn collect_versions(entries: &[VersionEntry]) -> Vec<VersionInfo> {
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let display = entry.version.trim().trim_start_matches(['v', 'V']);
+            if display.is_empty() {
+                return None;
+            }
+            Some(VersionInfo {
+                display: display.to_string(),
+                stable: !display.contains('-'),
+            })
+        })
+        .collect()
+}
+
 /// Normalize a VCS URL into a browsable `https` repository link: strip a
 /// trailing `.git` and rewrite `git@host:owner/repo` SSH form to `https`.
 fn normalize_repo_url(url: &str) -> Option<String> {
@@ -93,6 +120,7 @@ fn normalize_repo_url(url: &str) -> Option<String> {
 struct CacheEntry {
     fetched_at: Instant,
     release: Option<Release>,
+    versions: Vec<VersionInfo>,
 }
 
 /// HTTP client + per-package TTL cache. Network/parse failures resolve to
@@ -119,34 +147,51 @@ impl Packagist {
 
     /// Latest stable release for `vendor/package`, served from cache when fresh.
     pub async fn latest_stable(&self, name: &str) -> Option<Release> {
+        self.load(name).await.release
+    }
+
+    /// All published versions for `vendor/package`, newest-first, served from
+    /// cache when fresh.
+    pub async fn versions(&self, name: &str) -> Vec<VersionInfo> {
+        self.load(name).await.versions
+    }
+
+    /// Resolve a package's cache entry, fetching (and caching) once when stale.
+    async fn load(&self, name: &str) -> CacheEntry {
         if let Some(entry) = self.cached(name) {
             if entry.fetched_at.elapsed() < self.ttl {
-                return entry.release;
+                return entry;
             }
         }
 
-        let release = self.fetch(name).await;
-        self.store(name, release.clone());
-        release
+        let entry = self.fetch(name).await;
+        self.store(name, entry.clone());
+        entry
     }
 
     fn cached(&self, name: &str) -> Option<CacheEntry> {
         self.cache.lock().ok()?.get(name).cloned()
     }
 
-    fn store(&self, name: &str, release: Option<Release>) {
+    fn store(&self, name: &str, entry: CacheEntry) {
         if let Ok(mut cache) = self.cache.lock() {
-            cache.insert(
-                name.to_string(),
-                CacheEntry {
-                    fetched_at: Instant::now(),
-                    release,
-                },
-            );
+            cache.insert(name.to_string(), entry);
         }
     }
 
-    async fn fetch(&self, name: &str) -> Option<Release> {
+    /// Fetch and parse package metadata once into both the latest stable release
+    /// and the full version list. Network/parse failures yield an empty entry
+    /// (no release, no versions) — cached like any other result.
+    async fn fetch(&self, name: &str) -> CacheEntry {
+        let (release, versions) = self.fetch_metadata(name).await.unwrap_or_default();
+        CacheEntry {
+            fetched_at: Instant::now(),
+            release,
+            versions,
+        }
+    }
+
+    async fn fetch_metadata(&self, name: &str) -> Option<(Option<Release>, Vec<VersionInfo>)> {
         let url = format!("{}/p2/{}.json", self.registry, name);
         let response = self.client.get(&url).send().await.ok()?;
         if !response.status().is_success() {
@@ -154,7 +199,7 @@ impl Packagist {
         }
         let metadata = response.json::<Metadata>().await.ok()?;
         let entries = metadata.packages.get(name)?;
-        select_latest_stable(entries)
+        Some((select_latest_stable(entries), collect_versions(entries)))
     }
 }
 
@@ -232,6 +277,18 @@ mod tests {
             latest.repository.as_deref(),
             Some("https://github.com/acme/widget")
         );
+    }
+
+    #[test]
+    fn collects_all_versions_newest_first_with_stability() {
+        let list = entries(&["v7.12.x-dev", "7.12.1", "7.12.0", "7.11.2-RC1"]);
+        let versions = collect_versions(&list);
+        let displays: Vec<&str> = versions.iter().map(|v| v.display.as_str()).collect();
+        // Order preserved (Packagist serves newest-first); leading `v` stripped.
+        assert_eq!(displays, ["7.12.x-dev", "7.12.1", "7.12.0", "7.11.2-RC1"]);
+        // Stability tracks the presence of a pre-release/dev suffix.
+        let stable: Vec<bool> = versions.iter().map(|v| v.stable).collect();
+        assert_eq!(stable, [false, true, true, false]);
     }
 
     #[test]

@@ -20,6 +20,9 @@ unauthenticated raw `CHANGELOG.md` fetches where possible.
 ## Update tracks
 Offer separate code actions for major / minor / patch / pre-release bumps
 instead of a single "latest stable" action, so users can stay within a major.
+(Partially covered: version completion now lists every published version so a
+within-major version can be picked manually; this would add it as one-click
+code actions / Code Lenses.)
 
 ## Configurable settings surface
 Wire real settings through `lsp.composer-update-checker-lsp.settings`

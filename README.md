@@ -19,6 +19,13 @@ Latest versions come from the [Packagist v2 metadata API](https://packagist.org/
   hover too, confirming the latest version.
 - Offers a **code action** — _Update vendor/package to ^12.19.0_ — that rewrites
   the constraint, preserving your operator (`^`, `~`, or an exact pin).
+- **Completes versions**: with the cursor inside a constraint, trigger
+  completion (`editor: show completions`) to pick from every published version,
+  newest-first, with the latest stable preselected. The chosen version keeps
+  your operator (`^7.11` → `^7.12.1`).
+- Shows a **Code Lens** — _⬆ Update to ^12.19.0_ — above each outdated line for
+  a one-click bump. Code Lens is **off by default in Zed**; enable it with
+  `"code_lens": "on"` in your settings (or run `editor: toggle code lens`).
 
 Only files named `composer.json` are inspected; other JSON files are ignored.
 
