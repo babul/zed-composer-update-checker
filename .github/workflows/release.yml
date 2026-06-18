@@ -1,0 +1,64 @@
+name: release
+
+# Builds the language-server binary for every supported platform and attaches
+# the archives to the GitHub Release for the pushed tag. The extension
+# (src/lib.rs) downloads these assets, pinned to `v{extension version}`, so the
+# asset names and layout here are a contract: each archive holds the binary at
+# its root, named exactly `composer-update-checker-lsp[.exe]`.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin,       os: macos-14,       cross: false }
+          - { target: x86_64-apple-darwin,        os: macos-14,       cross: false }
+          - { target: x86_64-unknown-linux-musl,  os: ubuntu-latest,  cross: true }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-latest,  cross: true }
+          - { target: x86_64-pc-windows-msvc,     os: windows-latest, cross: false }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --locked
+
+      - name: Build
+        shell: bash
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release -p composer-update-checker-lsp --target ${{ matrix.target }}
+          else
+            cargo build --release -p composer-update-checker-lsp --target ${{ matrix.target }}
+          fi
+
+      - name: Package
+        shell: bash
+        run: |
+          bin=composer-update-checker-lsp
+          dir="target/${{ matrix.target }}/release"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            ( cd "$dir" && 7z a "$GITHUB_WORKSPACE/$bin-${{ matrix.target }}.zip" "$bin.exe" )
+          else
+            tar czf "$bin-${{ matrix.target }}.tar.gz" -C "$dir" "$bin"
+          fi
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: composer-update-checker-lsp-${{ matrix.target }}.*

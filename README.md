@@ -38,24 +38,43 @@ A Rust workspace with two crates, mirroring the npm extension:
 | root (`composer-update-checker`) | Thin `zed_extension_api` wrapper. Registers a JSON language server and launches the LSP binary. |
 | `lsp/` (`composer-update-checker-lsp`) | A [`tower-lsp`](https://crates.io/crates/tower-lsp) language server: parses the manifest, queries Packagist (TTL cache + bounded concurrency), emits diagnostics and code actions. |
 
-## Build & install (dev extension)
+## Install
 
-Requires a Rust toolchain (`rustup`/`cargo`).
+Open Zed's **Extensions** panel (`zed: extensions`), search for _Composer
+composer.json Update Checker_, and install. The extension downloads the matching
+language-server binary for your platform automatically — no toolchain required —
+and Zed offers updates as new versions are published.
+
+Supported platforms: macOS (arm64/x64), Linux (x64/arm64), Windows (x64).
+
+## Development
+
+Requires a Rust toolchain (`rustup`/`cargo`). Build the language server and put
+it on your `PATH`; the extension prefers a `PATH` binary over the downloaded
+release, so this overrides the published binary for local iteration:
 
 ```bash
-# 1. Build the language server
 cargo build --release -p composer-update-checker-lsp
-
-# 2. Put it on your PATH (the extension resolves it via `which`)
 ln -sf "$(pwd)/target/release/composer-update-checker-lsp" ~/.local/bin/composer-update-checker-lsp
 # (ensure ~/.local/bin is on your PATH; /usr/local/bin works too)
 ```
 
-Then in Zed: open the command palette → **zed: install dev extension** → select
-this repository's root directory.
+Then in Zed: command palette → **zed: install dev extension** → select this
+repository's root directory. Open any `composer.json` with outdated dependencies
+to verify the diagnostics, hover, completion, and the _Update …_ code action.
 
-Open any `composer.json` with outdated dependencies to verify the diagnostics
-and the _Update …_ code action.
+## Releasing
+
+The extension pins its binary download to `v{version}`, so the release **must
+exist before** that version is installed. For each release:
+
+1. Bump `version` in `extension.toml`, `Cargo.toml`, and `lsp/Cargo.toml`.
+2. Commit, then push a matching tag: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+   The `release` workflow cross-builds the language server for every platform and
+   attaches the archives to the GitHub Release.
+3. Update the entry in [`zed-industries/extensions`](https://github.com/zed-industries/extensions)
+   (submodule pointer + `version` in `extensions.toml`) and open a PR. Merging
+   publishes the update to all users.
 
 ## Tests
 
