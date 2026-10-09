@@ -166,9 +166,11 @@ impl zed::Extension for ComposerUpdatesExtension {
         language_server_id: &LanguageServerId,
         worktree: &zed::Worktree,
     ) -> Result<Option<zed::serde_json::Value>> {
-        Ok(LspSettings::for_worktree(language_server_id.as_ref(), worktree)
-            .ok()
-            .and_then(|settings| settings.initialization_options))
+        Ok(
+            LspSettings::for_worktree(language_server_id.as_ref(), worktree)
+                .ok()
+                .and_then(|settings| settings.initialization_options),
+        )
     }
 
     fn language_server_workspace_configuration(
@@ -176,9 +178,11 @@ impl zed::Extension for ComposerUpdatesExtension {
         language_server_id: &LanguageServerId,
         worktree: &zed::Worktree,
     ) -> Result<Option<zed::serde_json::Value>> {
-        Ok(LspSettings::for_worktree(language_server_id.as_ref(), worktree)
-            .ok()
-            .and_then(|settings| settings.settings))
+        Ok(
+            LspSettings::for_worktree(language_server_id.as_ref(), worktree)
+                .ok()
+                .and_then(|settings| settings.settings),
+        )
     }
 }
 

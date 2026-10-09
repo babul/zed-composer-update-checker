@@ -14,6 +14,11 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-wasip1
+          components: rustfmt, clippy
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Lint
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test the language server
         run: cargo test -p composer-update-checker-lsp
       - name: Check the extension compiles to WASM
