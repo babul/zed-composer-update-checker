@@ -91,13 +91,18 @@ impl Backend {
             .collect::<Vec<_>>()
             .await;
 
-        self.client.publish_diagnostics(uri, diagnostics, None).await;
+        self.client
+            .publish_diagnostics(uri, diagnostics, None)
+            .await;
     }
 }
 
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
-    async fn initialize(&self, _params: InitializeParams) -> tower_lsp::jsonrpc::Result<InitializeResult> {
+    async fn initialize(
+        &self,
+        _params: InitializeParams,
+    ) -> tower_lsp::jsonrpc::Result<InitializeResult> {
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
@@ -342,7 +347,12 @@ fn completion_items(dep: &Dependency, versions: &[VersionInfo]) -> Vec<Completio
                 label: version.display.clone(),
                 kind: Some(CompletionItemKind::VALUE),
                 detail: Some(
-                    if version.stable { "stable" } else { "pre-release" }.to_string(),
+                    if version.stable {
+                        "stable"
+                    } else {
+                        "pre-release"
+                    }
+                    .to_string(),
                 ),
                 // Match the candidate against the value being replaced (e.g.
                 // `^7.12`) rather than its bare label, or the operator prefix
@@ -379,7 +389,10 @@ fn packagist_url(name: &str) -> String {
 fn hover_markdown(dep: &Dependency, latest: Option<&Release>) -> String {
     let heading = match latest {
         Some(r) if is_outdated(&dep.constraint, &r.version) => {
-            format!("**{}** — update available: `{}` → `{}`", dep.name, dep.constraint, r.display)
+            format!(
+                "**{}** — update available: `{}` → `{}`",
+                dep.name, dep.constraint, r.display
+            )
         }
         Some(r) => format!("**{}** — up to date · latest `{}`", dep.name, r.display),
         None => format!("**{}**", dep.name),
