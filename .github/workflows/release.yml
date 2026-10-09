@@ -27,7 +27,7 @@ jobs:
           - { target: aarch64-unknown-linux-musl, os: ubuntu-latest,  cross: true }
           - { target: x86_64-pc-windows-msvc,     os: windows-latest, cross: false }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -59,6 +59,6 @@ jobs:
           fi
 
       - name: Attach to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: composer-update-checker-lsp-${{ matrix.target }}.*
