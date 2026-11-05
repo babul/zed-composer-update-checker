@@ -27,7 +27,7 @@ jobs:
           - { target: aarch64-unknown-linux-musl, os: ubuntu-latest,  cross: true }
           - { target: x86_64-pc-windows-msvc,     os: windows-latest, cross: false }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
